@@ -53,3 +53,61 @@ jobs:
 
       - name: build
         run: go build ./...
+
+  e2e:
+    name: e2e tests (Playwright)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: linkpulse
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/linkpulse?sslmode=disable
+      BASE_URL: http://localhost:8080
+      PORT: 8080
+      CI: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: apply schema
+        run: PGPASSWORD=postgres psql -h localhost -U postgres -d linkpulse -f schema.sql
+
+      - name: install e2e dependencies
+        working-directory: e2e
+        run: npm ci
+
+      - name: install Playwright browsers
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: run e2e tests
+        working-directory: e2e
+        run: npm run test:e2e
+
+      - name: upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: e2e/playwright-report/
+          retention-days: 14
