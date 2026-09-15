@@ -1,0 +1,10 @@
+# Go
+linkpulse
+*.exe
+*.test
+
+# 環境變數(裡面可能有密碼，絕對不要 push 上去)
+.env
+
+# macOS
+.DS_Store

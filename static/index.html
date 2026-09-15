@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LinkPulse</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7fb;
+    --card: #ffffff;
+    --text: #1a1a2e;
+    --muted: #6b7280;
+    --accent: #4f46e5;
+    --accent-hover: #4338ca;
+    --border: #e5e7eb;
+    --error: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f0f17;
+      --card: #1a1a26;
+      --text: #f1f1f5;
+      --muted: #9ca3af;
+      --border: #2d2d3a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 48px 16px;
+  }
+  .container {
+    width: 100%;
+    max-width: 560px;
+  }
+  h1 {
+    font-size: 28px;
+    margin: 0 0 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .subtitle {
+    color: var(--muted);
+    margin: 0 0 32px;
+    font-size: 14px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 24px;
+  }
+  form {
+    display: flex;
+    gap: 8px;
+  }
+  input[type="url"] {
+    flex: 1;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    font-size: 14px;
+    min-width: 0;
+  }
+  input[type="url"]:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  button {
+    padding: 12px 20px;
+    border-radius: 8px;
+    border: none;
+    background: var(--accent);
+    color: white;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  button:hover { background: var(--accent-hover); }
+  button:disabled { opacity: 0.6; cursor: not-allowed; }
+  .error {
+    color: var(--error);
+    font-size: 13px;
+    margin-top: 10px;
+  }
+  .result {
+    margin-top: 16px;
+    padding: 14px;
+    border-radius: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .result.show { display: flex; }
+  .result a {
+    color: var(--accent);
+    font-weight: 600;
+    text-decoration: none;
+    word-break: break-all;
+  }
+  .result a:hover { text-decoration: underline; }
+  .copy-btn {
+    background: var(--border);
+    color: var(--text);
+    padding: 8px 12px;
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+  .copy-btn:hover { background: var(--muted); color: var(--card); }
+  .history {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .history li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .history li:last-child { border-bottom: none; }
+  .history .original {
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+  .history .short {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .empty {
+    color: var(--muted);
+    font-size: 13px;
+    text-align: center;
+    padding: 8px 0;
+  }
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 0 0 12px;
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔗 LinkPulse</h1>
+    <p class="subtitle">貼上網址，立刻產生短連結</p>
+
+    <div class="card">
+      <form id="shorten-form">
+        <input type="url" id="url-input" placeholder="https://example.com/very/long/url" required />
+        <button type="submit" id="submit-btn">縮短</button>
+      </form>
+      <div class="error" id="error-msg" style="display:none;"></div>
+      <div class="result" id="result">
+        <a id="result-link" href="#" target="_blank" rel="noopener"></a>
+        <button class="copy-btn" id="copy-btn">複製</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <p class="section-title">歷史紀錄</p>
+      <ul class="history" id="history-list"></ul>
+      <p class="empty" id="empty-msg">尚無紀錄</p>
+    </div>
+  </div>
+
+<script>
+  const form = document.getElementById('shorten-form');
+  const urlInput = document.getElementById('url-input');
+  const submitBtn = document.getElementById('submit-btn');
+  const errorMsg = document.getElementById('error-msg');
+  const result = document.getElementById('result');
+  const resultLink = document.getElementById('result-link');
+  const copyBtn = document.getElementById('copy-btn');
+  const historyList = document.getElementById('history-list');
+  const emptyMsg = document.getElementById('empty-msg');
+
+  const HISTORY_KEY = 'linkpulse_history';
+
+  function loadHistory() {
+    try {
+      return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+    } catch {
+      return [];
+    }
+  }
+
+  function saveHistory(items) {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(items.slice(0, 20)));
+    } catch {}
+  }
+
+  function renderHistory() {
+    const items = loadHistory();
+    historyList.innerHTML = '';
+    emptyMsg.style.display = items.length ? 'none' : 'block';
+    for (const item of items) {
+      const li = document.createElement('li');
+      const original = document.createElement('span');
+      original.className = 'original';
+      original.textContent = item.original_url;
+      original.title = item.original_url;
+      const short = document.createElement('a');
+      short.className = 'short';
+      short.href = item.short_url;
+      short.target = '_blank';
+      short.rel = 'noopener';
+      short.textContent = item.short_code;
+      li.appendChild(original);
+      li.appendChild(short);
+      historyList.appendChild(li);
+    }
+  }
+
+  function showError(msg) {
+    errorMsg.textContent = msg;
+    errorMsg.style.display = 'block';
+    result.classList.remove('show');
+  }
+
+  function clearError() {
+    errorMsg.style.display = 'none';
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    clearError();
+    const url = urlInput.value.trim();
+    if (!url) return;
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = '處理中...';
+
+    try {
+      const res = await fetch('/shorten', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        showError(data.error || '發生錯誤，請稍後再試');
+        return;
+      }
+
+      resultLink.href = data.short_url;
+      resultLink.textContent = data.short_url;
+      result.classList.add('show');
+
+      const items = loadHistory();
+      items.unshift({
+        original_url: url,
+        short_code: data.short_code,
+        short_url: data.short_url,
+      });
+      saveHistory(items);
+      renderHistory();
+
+      urlInput.value = '';
+    } catch (err) {
+      showError('無法連線到伺服器');
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = '縮短';
+    }
+  });
+
+  copyBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(resultLink.href);
+      copyBtn.textContent = '已複製';
+      setTimeout(() => (copyBtn.textContent = '複製'), 1500);
+    } catch {
+      copyBtn.textContent = '複製失敗';
+    }
+  });
+
+  renderHistory();
+</script>
+</body>
+</html>
