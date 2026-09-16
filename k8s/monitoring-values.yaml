@@ -1,0 +1,39 @@
+# GKE Autopilot 相容設定：Autopilot 禁止 hostNetwork/hostPID/hostPath 存取,
+# 也不准修改 kube-system 裡的受管理資源,所以要關掉這些預設會踩到限制的元件。
+alertmanager:
+  enabled: false
+
+grafana:
+  adminPassword: CHANGE_ME
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+prometheus:
+  prometheusSpec:
+    retention: 2d
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+
+nodeExporter:
+  enabled: false
+
+kubeControllerManager:
+  enabled: false
+
+kubeEtcd:
+  enabled: false
+
+kubeScheduler:
+  enabled: false
+
+kubeProxy:
+  enabled: false
+
+coreDns:
+  enabled: false

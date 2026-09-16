@@ -293,6 +293,25 @@ func TestRedirectHandler_HitCountUpdateFailureDoesNotBlockRedirect(t *testing.T)
 	}
 }
 
+// ---------- /metrics ----------
+
+func TestMetricsEndpoint(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	srv.routes().ServeHTTP(httptest.NewRecorder(), req)
+
+	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	srv.routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "linkpulse_http_requests_total") {
+		t.Errorf("expected /metrics body to contain linkpulse_http_requests_total")
+	}
+}
+
 // ---------- indexHandler ----------
 
 func TestIndexHandler(t *testing.T) {

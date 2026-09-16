@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 //go:embed static/index.html
@@ -168,9 +169,11 @@ func (s *Server) routes() *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	r.Use(metricsMiddleware)
 
 	r.Get("/", s.indexHandler)
 	r.Get("/healthz", s.healthzHandler)
+	r.Handle("/metrics", promhttp.Handler())
 	r.Post("/shorten", s.shortenHandler)
 	r.Get("/{code}", s.redirectHandler)
 

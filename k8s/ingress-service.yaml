@@ -1,0 +1,17 @@
+# TODO(未完成): HTTPS/Ingress 設定嘗試過,但 GKE Ingress 控制器卡在同步階段
+# (NEG 一直沒建立成功),嘗試重建也沒解決,先移除實際部署的資源避免計費。
+# 這幾個檔案留著當作「知道怎麼做、原理正確」的紀錄,之後有時間再排查根因。
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: linkpulse-api-ingress
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+spec:
+  type: ClusterIP
+  selector:
+    app: linkpulse-api
+  ports:
+    - port: 80
+      targetPort: 8080

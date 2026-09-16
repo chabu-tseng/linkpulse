@@ -1,0 +1,24 @@
+# TODO(未完成): HTTPS/Ingress 設定嘗試過,但 GKE Ingress 控制器卡在同步階段
+# (NEG 一直沒建立成功),嘗試重建也沒解決,先移除實際部署的資源避免計費。
+# 這幾個檔案留著當作「知道怎麼做、原理正確」的紀錄,之後有時間再排查根因。
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: linkpulse-ingress
+  annotations:
+    kubernetes.io/ingress.global-static-ip-name: linkpulse-ip
+    networking.gke.io/managed-certificates: linkpulse-cert
+spec:
+  ingressClassName: gce
+  rules:
+    - host: 34.36.239.115.nip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: linkpulse-api-ingress
+                port:
+                  number: 80
