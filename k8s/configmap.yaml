@@ -3,5 +3,5 @@ kind: ConfigMap
 metadata:
     name: linkpulse-api
 data:
-    BASE_URL: "TODO: fill in the URL on the cloud services"
+    BASE_URL: "http://35.194.216.206"
     PORT: "8080"
