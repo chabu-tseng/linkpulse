@@ -3,9 +3,9 @@ kind: Service
 metadata:
   name: linkpulse-api
 spec:
-  type: 
+  type: LoadBalancer
   selector:
-    app: 
+    app: linkpulse-api
   ports:
-    - port: 
-      targetPort:
+    - port: 80
+      targetPort: 8080

@@ -1,1 +1,7 @@
 apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: linkpulse-api
+data:
+    BASE_URL: "TODO: fill in the URL on the cloud services"
+    PORT: "8080"
