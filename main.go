@@ -46,15 +46,23 @@ var allowedURLSchemes = map[string]bool{
 // 會直接被排除（視同不存在），不用等背景的清理 CronJob 跑過才失效。
 const linkTTL = 72 * time.Hour
 
-// Server 把外部依賴（DB、base URL、亂數來源）包起來，讓 handler 可以被注入假的依賴以利測試
+// Server 把外部依賴（DB、base URL、亂數來源、rate limiter）包起來，讓 handler 可以被注入假的依賴以利測試
 type Server struct {
-	db         *sql.DB
-	baseURL    string
-	randSource io.Reader
+	db          *sql.DB
+	baseURL     string
+	randSource  io.Reader
+	rateLimiter *ipRateLimiter
 }
 
 func NewServer(db *sql.DB, baseURL string) *Server {
-	return &Server{db: db, baseURL: baseURL, randSource: rand.Reader}
+	return &Server{
+		db:         db,
+		baseURL:    baseURL,
+		randSource: rand.Reader,
+		// 每個來源 IP 每秒 10 個請求、可以短暫爆衝到 20 個——足夠正常使用，
+		// 但擋得住像 hey 那種單一來源的暴力打法
+		rateLimiter: newIPRateLimiter(10, 20),
+	}
 }
 
 // generateShortCode 產生一個 7 個字元的隨機短碼。source 通常傳
@@ -212,11 +220,18 @@ func (s *Server) routes() *chi.Mux {
 	r.Use(middleware.Recoverer)
 	r.Use(metricsMiddleware)
 
-	r.Get("/", s.indexHandler)
+	// /healthz、/metrics 絕對不能限流：前者是 k8s liveness/readiness probe
+	// 會固定頻率打的端點，後者是 Prometheus scrape 的端點，兩個都是叢集
+	// 內部基礎設施在用，限流只會造成 probe 失敗、Pod 被誤判成不健康重啟。
 	r.Get("/healthz", s.healthzHandler)
 	r.Handle("/metrics", promhttp.Handler())
-	r.Post("/shorten", s.shortenHandler)
-	r.Get("/{code}", s.redirectHandler)
+
+	r.Group(func(r chi.Router) {
+		r.Use(s.rateLimiter.middleware)
+		r.Get("/", s.indexHandler)
+		r.Post("/shorten", s.shortenHandler)
+		r.Get("/{code}", s.redirectHandler)
+	})
 
 	return r
 }

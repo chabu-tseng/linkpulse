@@ -221,7 +221,12 @@ func TestShortenHandler_RandSourceError(t *testing.T) {
 		t.Fatalf("failed to create sqlmock: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	srv := &Server{db: db, baseURL: "http://localhost:8080", randSource: failingReader{}}
+	// 用 NewServer 走完整初始化(rateLimiter 才會被正確設起來)，
+	// 再把 randSource 換成會失敗的版本 -- 直接手刻 &Server{} 會漏掉
+	// rateLimiter，request 進來會在 rate limit 那層 nil pointer panic，
+	// 被 Recoverer 接住變成同樣的 500，但測到的根本是別的錯誤路徑。
+	srv := NewServer(db, "http://localhost:8080")
+	srv.randSource = failingReader{}
 
 	body := strings.NewReader(`{"url":"https://example.com"}`)
 	req := httptest.NewRequest(http.MethodPost, "/shorten", body)
