@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: linkpulse-docker
-          image: asia-east1-docker.pkg.dev/linkpulse-508704/linkpulse-repo/linkpulse:ff125886df7e3fedaa993f895a7648ecca761958
+          image: asia-east1-docker.pkg.dev/linkpulse-508704/linkpulse-repo/linkpulse:a2899d9c82251c84bf238a85cf45e8cb24a34c0c
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
