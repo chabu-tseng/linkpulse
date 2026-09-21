@@ -10,8 +10,10 @@
 package main
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -224,9 +226,9 @@ func TestIntegration_RedirectFreshLinkWithinTTL(t *testing.T) {
 	}
 }
 
-// TestIntegration_ShortCodeCollision 驗證目前系統對短碼碰撞的真實行為：
-// UNIQUE constraint 觸發時，INSERT 失敗，API 回 500。
-// 這是已知限制（沒有重試機制），這個測試明確記錄現況，之後補上 retry 後這個測試要跟著改。
+// TestIntegration_ShortCodeCollision 驗證資料庫本身的 UNIQUE constraint 是
+// app 端重試機制的安全網：就算 app 邏輯有 bug 讓兩個相同短碼都送進 INSERT，
+// Postgres 這一層還是會擋下來，不會真的存進兩筆衝突的資料。
 func TestIntegration_ShortCodeCollision(t *testing.T) {
 	db := setupIntegrationDB(t)
 
@@ -242,6 +244,62 @@ func TestIntegration_ShortCodeCollision(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unique") && !strings.Contains(err.Error(), "duplicate") {
 		t.Errorf("expected a unique constraint error, got: %v", err)
+	}
+}
+
+// onceThenReader 第一次 Read 回傳固定的 bytes（用來製造一次可預期的短碼碰撞），
+// 之後交給真正的亂數來源，讓重試那一次可以正常產生一個新的、不會撞的短碼。
+type onceThenReader struct {
+	first []byte
+	after io.Reader
+}
+
+func (r *onceThenReader) Read(p []byte) (int, error) {
+	if r.first != nil {
+		n := copy(p, r.first)
+		r.first = nil
+		return n, nil
+	}
+	return r.after.Read(p)
+}
+
+// TestIntegration_ShortenRetriesOnRealCollision 端到端驗證 app 層的重試機制：
+// 先塞一筆已知短碼(對應固定的隨機 bytes)，讓 shortenHandler 第一次產生的短碼
+// 真的撞上，確認它會自動重試並最終成功，而不是直接回 500。
+func TestIntegration_ShortenRetriesOnRealCollision(t *testing.T) {
+	db := setupIntegrationDB(t)
+
+	// shortCodeChars 的前 7 個字元是 "abcdefg"，對應到 raw bytes 0~6
+	const collidingCode = "abcdefg"
+	if _, err := db.Exec(`INSERT INTO links (short_code, original_url) VALUES ($1, $2)`,
+		collidingCode, "https://example.com/pre-existing"); err != nil {
+		t.Fatalf("failed to seed colliding link: %v", err)
+	}
+
+	srv := NewServer(db, "http://localhost:8080")
+	srv.randSource = &onceThenReader{
+		first: []byte{0, 1, 2, 3, 4, 5, 6}, // 產生出 "abcdefg"，會跟上面那筆撞號
+		after: rand.Reader,
+	}
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/shorten", "application/json",
+		strings.NewReader(`{"url":"https://example.com/should-retry-and-succeed"}`))
+	if err != nil {
+		t.Fatalf("shorten request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 after automatic retry, got %d", resp.StatusCode)
+	}
+
+	var shortenResp shortenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&shortenResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if shortenResp.ShortCode == collidingCode {
+		t.Fatalf("expected a different short code after retry, still got the colliding one %q", collidingCode)
 	}
 }
 

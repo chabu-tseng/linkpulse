@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // failingReader 永遠回傳錯誤,用來測試 generateShortCode 讀不到隨機資料時的行為
@@ -230,6 +231,98 @@ func TestShortenHandler_RandSourceError(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected status 500, got %d", w.Code)
+	}
+}
+
+// ---------- isUniqueViolation ----------
+
+func TestIsUniqueViolation(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"unique violation (23505)", &pgconn.PgError{Code: "23505"}, true},
+		{"different pg error code", &pgconn.PgError{Code: "08006"}, false},
+		{"unrelated error", sql.ErrConnDone, false},
+		{"nil error", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isUniqueViolation(tc.err); got != tc.want {
+				t.Errorf("isUniqueViolation(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------- shortenHandler：短碼碰撞重試 ----------
+
+func TestShortenHandler_CollisionRetrySucceeds(t *testing.T) {
+	srv, mock := newTestServer(t)
+	// 第一次撞到 UNIQUE constraint，第二次重試成功
+	mock.ExpectExec("INSERT INTO links").
+		WithArgs(sqlmock.AnyArg(), "https://example.com").
+		WillReturnError(&pgconn.PgError{Code: "23505"})
+	mock.ExpectExec("INSERT INTO links").
+		WithArgs(sqlmock.AnyArg(), "https://example.com").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	body := strings.NewReader(`{"url":"https://example.com"}`)
+	req := httptest.NewRequest(http.MethodPost, "/shorten", body)
+	w := httptest.NewRecorder()
+
+	srv.routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200 after retry, got %d, body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet mock expectations: %v", err)
+	}
+}
+
+func TestShortenHandler_CollisionRetryExhausted(t *testing.T) {
+	srv, mock := newTestServer(t)
+	// 每一次都撞到 UNIQUE constraint，重試 maxShortCodeRetries 次後應該放棄回 500
+	for i := 0; i < maxShortCodeRetries+1; i++ {
+		mock.ExpectExec("INSERT INTO links").
+			WithArgs(sqlmock.AnyArg(), "https://example.com").
+			WillReturnError(&pgconn.PgError{Code: "23505"})
+	}
+
+	body := strings.NewReader(`{"url":"https://example.com"}`)
+	req := httptest.NewRequest(http.MethodPost, "/shorten", body)
+	w := httptest.NewRecorder()
+
+	srv.routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500 after exhausting retries, got %d", w.Code)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet mock expectations: %v", err)
+	}
+}
+
+func TestShortenHandler_NonCollisionErrorDoesNotRetry(t *testing.T) {
+	srv, mock := newTestServer(t)
+	// 不是 UNIQUE constraint 撞到的錯誤,不該重試,應該只呼叫一次就直接回 500
+	mock.ExpectExec("INSERT INTO links").
+		WithArgs(sqlmock.AnyArg(), "https://example.com").
+		WillReturnError(sql.ErrConnDone)
+
+	body := strings.NewReader(`{"url":"https://example.com"}`)
+	req := httptest.NewRequest(http.MethodPost, "/shorten", body)
+	w := httptest.NewRecorder()
+
+	srv.routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500, got %d", w.Code)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet mock expectations (should be exactly 1 insert attempt): %v", err)
 	}
 }
 

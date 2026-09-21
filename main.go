@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -115,6 +117,19 @@ type shortenResponse struct {
 	ShortURL  string `json:"short_url"`
 }
 
+// maxShortCodeRetries 短碼撞到 UNIQUE constraint 時最多重試幾次。
+// 62^7 ≈ 3.5e12 種組合，正常情況下碰撞機率極低，這個上限只是防止
+// 極端運氣不好時無限重試卡住請求，不是預期會被打滿的量。
+const maxShortCodeRetries = 5
+
+// isUniqueViolation 判斷錯誤是不是真的撞到 short_code 的 UNIQUE constraint，
+// 而不是隨便什麼 DB 錯誤都拿去重試（例如連線斷掉重試也沒用，只會浪費時間）。
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	// Postgres 的 SQLSTATE 23505 = unique_violation
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
 // shortenHandler 接收原始網址，回傳短碼
 func (s *Server) shortenHandler(w http.ResponseWriter, r *http.Request) {
 	var req shortenRequest
@@ -128,18 +143,29 @@ func (s *Server) shortenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	code, err := generateShortCode(s.randSource)
-	if err != nil {
-		log.Printf("failed to generate short code: %v", err)
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
-		return
-	}
+	var code string
+	for attempt := 0; ; attempt++ {
+		var err error
+		code, err = generateShortCode(s.randSource)
+		if err != nil {
+			log.Printf("failed to generate short code: %v", err)
+			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+			return
+		}
 
-	_, err = s.db.ExecContext(r.Context(),
-		`INSERT INTO links (short_code, original_url) VALUES ($1, $2)`,
-		code, req.URL,
-	)
-	if err != nil {
+		_, err = s.db.ExecContext(r.Context(),
+			`INSERT INTO links (short_code, original_url) VALUES ($1, $2)`,
+			code, req.URL,
+		)
+		if err == nil {
+			break
+		}
+
+		if isUniqueViolation(err) && attempt < maxShortCodeRetries {
+			log.Printf("short code collision on %q, retrying (attempt %d/%d)", code, attempt+1, maxShortCodeRetries)
+			continue
+		}
+
 		log.Printf("failed to insert link: %v", err)
 		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 		return
