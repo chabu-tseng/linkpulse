@@ -40,6 +40,10 @@ var allowedURLSchemes = map[string]bool{
 	"https": true,
 }
 
+// linkTTL 短網址的存活時間。超過這個時間的短碼在 redirectHandler 查詢時
+// 會直接被排除（視同不存在），不用等背景的清理 CronJob 跑過才失效。
+const linkTTL = 72 * time.Hour
+
 // Server 把外部依賴（DB、base URL、亂數來源）包起來，讓 handler 可以被注入假的依賴以利測試
 type Server struct {
 	db         *sql.DB
@@ -154,8 +158,8 @@ func (s *Server) redirectHandler(w http.ResponseWriter, r *http.Request) {
 
 	var originalURL string
 	err := s.db.QueryRowContext(r.Context(),
-		`SELECT original_url FROM links WHERE short_code = $1`,
-		code,
+		`SELECT original_url FROM links WHERE short_code = $1 AND created_at > $2`,
+		code, time.Now().Add(-linkTTL),
 	).Scan(&originalURL)
 
 	if err == sql.ErrNoRows {

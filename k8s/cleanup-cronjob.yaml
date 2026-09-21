@@ -1,0 +1,42 @@
+# 定期把超過 linkTTL(main.go 裡定義的 72 小時)的資料實體刪除。
+# app 端的 redirectHandler 查詢時已經會排除過期資料(立即生效,見
+# TestIntegration_RedirectExpiredLink),這個 CronJob 負責的是「把資料真的
+# 從資料庫清掉」,避免 links 表隨時間無限成長、佔用 storage/index 空間。
+# 兩者是互補關係:一個管「查得到查不到」，一個管「留不留在磁碟上」。
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: linkpulse-cleanup
+spec:
+  # 每天凌晨 3 點(UTC)跑一次,資料庫負載低的時段
+  schedule: "0 3 * * *"
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: cleanup
+              image: postgres:16-alpine
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: linkpulse-secret
+                      key: DATABASE_URL
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  echo "刪除 created_at 超過 3 天的資料..."
+                  psql "$DATABASE_URL" -c "DELETE FROM links WHERE created_at < now() - interval '3 days';"
+                  echo "清理完成"
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 100m
+                  memory: 128Mi

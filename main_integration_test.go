@@ -17,6 +17,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -163,6 +164,63 @@ func TestIntegration_RedirectNotFound(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+// TestIntegration_RedirectExpiredLink 驗證超過 linkTTL(3天)的短碼視同不存在，
+// 不用等背景 CronJob 跑過就會立即生效 -- 這是查詢時的 created_at 過濾條件在做的事。
+func TestIntegration_RedirectExpiredLink(t *testing.T) {
+	db := setupIntegrationDB(t)
+	srv := NewServer(db, "http://localhost:8080")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	// 手動塞一筆 4 天前建立的資料,模擬已過期的短碼
+	fourDaysAgo := time.Now().Add(-4 * 24 * time.Hour)
+	if _, err := db.Exec(
+		`INSERT INTO links (short_code, original_url, created_at) VALUES ($1, $2, $3)`,
+		"old0001", "https://example.com/expired", fourDaysAgo,
+	); err != nil {
+		t.Fatalf("failed to seed expired link: %v", err)
+	}
+
+	resp, err := http.Get(ts.URL + "/old0001")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for expired link, got %d", resp.StatusCode)
+	}
+}
+
+// TestIntegration_RedirectFreshLinkWithinTTL 確認沒過期的連結不會被誤判成過期
+func TestIntegration_RedirectFreshLinkWithinTTL(t *testing.T) {
+	db := setupIntegrationDB(t)
+	srv := NewServer(db, "http://localhost:8080")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	oneHourAgo := time.Now().Add(-1 * time.Hour)
+	if _, err := db.Exec(
+		`INSERT INTO links (short_code, original_url, created_at) VALUES ($1, $2, $3)`,
+		"new0001", "https://example.com/fresh", oneHourAgo,
+	); err != nil {
+		t.Fatalf("failed to seed fresh link: %v", err)
+	}
+
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Get(ts.URL + "/new0001")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected 302 for link within TTL, got %d", resp.StatusCode)
 	}
 }
 

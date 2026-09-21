@@ -256,7 +256,7 @@ func TestRedirectHandler_Found(t *testing.T) {
 	srv, mock := newTestServer(t)
 	rows := sqlmock.NewRows([]string{"original_url"}).AddRow("https://example.com")
 	mock.ExpectQuery("SELECT original_url FROM links").
-		WithArgs("abc1234").
+		WithArgs("abc1234", sqlmock.AnyArg()).
 		WillReturnRows(rows)
 	mock.ExpectExec("UPDATE links SET hit_count").
 		WithArgs("abc1234").
@@ -278,7 +278,7 @@ func TestRedirectHandler_Found(t *testing.T) {
 func TestRedirectHandler_NotFound(t *testing.T) {
 	srv, mock := newTestServer(t)
 	mock.ExpectQuery("SELECT original_url FROM links").
-		WithArgs("missing").
+		WithArgs("missing", sqlmock.AnyArg()).
 		WillReturnError(sql.ErrNoRows)
 
 	req := httptest.NewRequest(http.MethodGet, "/missing", nil)
@@ -294,7 +294,7 @@ func TestRedirectHandler_NotFound(t *testing.T) {
 func TestRedirectHandler_QueryError(t *testing.T) {
 	srv, mock := newTestServer(t)
 	mock.ExpectQuery("SELECT original_url FROM links").
-		WithArgs("boom0001").
+		WithArgs("boom0001", sqlmock.AnyArg()).
 		WillReturnError(sql.ErrConnDone)
 
 	req := httptest.NewRequest(http.MethodGet, "/boom0001", nil)
@@ -313,7 +313,7 @@ func TestRedirectHandler_HitCountUpdateFailureDoesNotBlockRedirect(t *testing.T)
 	srv, mock := newTestServer(t)
 	rows := sqlmock.NewRows([]string{"original_url"}).AddRow("https://example.com")
 	mock.ExpectQuery("SELECT original_url FROM links").
-		WithArgs("abc1234").
+		WithArgs("abc1234", sqlmock.AnyArg()).
 		WillReturnRows(rows)
 	mock.ExpectExec("UPDATE links SET hit_count").
 		WithArgs("abc1234").
