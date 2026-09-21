@@ -1,0 +1,57 @@
+# SLO 告警規則。目前 Alertmanager 沒有開(demo 環境不需要真的推播),
+# 所以這份 PrometheusRule 只會產生「告警觸發」的紀錄,不會真的通知任何人。
+# 門檻值來自 2026-09-16 的一次真實負載測試(見 k8s/SLO.md 或對話記錄),
+# 不是憑空拍腦袋訂的數字。
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: linkpulse-slo
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: linkpulse-slo
+      rules:
+        # 可用性 SLO:非 5xx 請求比例低於 99% 時觸發
+        # (讀取路徑實測只有 ~2.9%,這條規則目前會是持續 firing 的狀態,
+        # 這是刻意保留的 -- 誠實反映現況還沒達標,不是把門檻調鬆蓋過去)
+        - alert: LinkPulseAvailabilitySLOBreach
+          expr: |
+            sum(rate(linkpulse_http_requests_total{status!~"5.."}[5m])) by (route)
+              /
+            sum(rate(linkpulse_http_requests_total[5m])) by (route)
+            < 0.99
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.route }} 可用性低於 99% SLO 門檻"
+            description: "過去 5 分鐘 {{ $labels.route }} 的非 5xx 請求比例只有 {{ $value | humanizePercentage }}。"
+
+        # 延遲 SLO:p99 超過 8 秒觸發(門檻取自 /shorten 實測 p99 6.01s + 緩衝)
+        - alert: LinkPulseLatencySLOBreach
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(linkpulse_http_request_duration_seconds_bucket[5m])) by (le, route)
+            ) > 8
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.route }} p99 延遲超過 8 秒 SLO 門檻"
+            description: "過去 5 分鐘 {{ $labels.route }} 的 p99 延遲是 {{ $value }}s。"
+
+        # 錯誤預算燒錢速率:短時間內錯誤率如果比 SLO 目標快 10 倍以上燒掉,
+        # 代表正在發生像這次 OOMKilled 這種急性 incident,而不是緩慢劣化
+        - alert: LinkPulseErrorBudgetFastBurn
+          expr: |
+            sum(rate(linkpulse_http_requests_total{status=~"5.."}[5m])) by (route)
+              /
+            sum(rate(linkpulse_http_requests_total[5m])) by (route)
+            > 0.10
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.route }} 錯誤率快速惡化(疑似 incident 而非漸進劣化)"
+            description: "過去 2 分鐘 {{ $labels.route }} 錯誤率高達 {{ $value | humanizePercentage }},比照 2026-09-16 的 Postgres OOMKilled 事件模式。"

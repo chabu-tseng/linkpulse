@@ -1,0 +1,17 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: linkpulse-api
+  labels:
+    # 這個 label 一定要跟 Prometheus CR 的 serviceMonitorSelector 對上
+    # (kube-prometheus-stack release 名稱是 "monitoring"),否則 Prometheus
+    # 根本不會發現這個 ServiceMonitor。
+    release: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: linkpulse-api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
