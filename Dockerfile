@@ -8,8 +8,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o linkpulse .
 
 # --- runtime stage ---
 FROM alpine:3.20
+RUN addgroup -S linkpulse && adduser -S linkpulse -G linkpulse
 WORKDIR /app
 COPY --from=builder /app/linkpulse .
 COPY static ./static
+USER linkpulse
 EXPOSE 8080
 ENTRYPOINT ["./linkpulse"]

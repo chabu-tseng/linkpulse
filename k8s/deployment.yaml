@@ -12,6 +12,9 @@ spec:
       labels:
         app: linkpulse-api
     spec:
+      # app never talks to the k8s API, so it doesn't need the default
+      # service account's token mounted into the pod
+      automountServiceAccountToken: false
       containers:
         - name: linkpulse-docker
           image: asia-east1-docker.pkg.dev/linkpulse-508704/linkpulse-repo/linkpulse:6e09f5b42fcd53dc1f616c27526f32910268ffc1
