@@ -117,13 +117,22 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit, integration, e2e]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: read
+      id-token: write # required to mint the OIDC token WIF exchanges for GCP credentials
     steps:
       - uses: actions/checkout@v7
 
+      # Workload Identity Federation: no long-lived key in GitHub Secrets.
+      # GitHub mints a short-lived OIDC token; GCP trusts it only for pushes
+      # from chabu-tseng/linkpulse (enforced by the pool provider's
+      # attribute-condition, not by anything in this file).
       - name: authenticate to GCP
+        id: auth
         uses: google-github-actions/auth@v3
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: projects/233179434449/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider
+          service_account: github-actions-deployer@linkpulse-508704.iam.gserviceaccount.com
 
       - name: set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v3
@@ -131,8 +140,62 @@ jobs:
       - name: configure docker for Artifact Registry
         run: gcloud auth configure-docker asia-east1-docker.pkg.dev --quiet
 
+      # ubuntu-latest runners are amd64 natively -- this is the exact
+      # docker build that failed on my Apple Silicon laptop, but it's fine
+      # here since there's no cross-architecture mismatch to hit.
       - name: build image
         run: docker build -t asia-east1-docker.pkg.dev/linkpulse-508704/linkpulse-repo/linkpulse:${{ github.sha }} .
 
       - name: push image
         run: docker push asia-east1-docker.pkg.dev/linkpulse-508704/linkpulse-repo/linkpulse:${{ github.sha }}
+
+  deploy:
+    name: deploy to GKE
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # This is the actual "Delivery, not Deployment" gate: GitHub pauses this
+    # job here until someone with write access approves it on the Actions
+    # tab, no matter how green the jobs above are. Configured once in the
+    # repo's Settings -> Environments -> production -> required reviewers.
+    environment: production
+    permissions:
+      contents: write # to commit the updated image tag back to k8s/deployment.yaml
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: authenticate to GCP
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/233179434449/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider
+          service_account: github-actions-deployer@linkpulse-508704.iam.gserviceaccount.com
+
+      - name: set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: linkpulse-cluster
+          location: asia-east1
+
+      - name: update image tag and apply
+        run: |
+          sed -i "s|linkpulse-repo/linkpulse:[a-f0-9]*|linkpulse-repo/linkpulse:${{ github.sha }}|" k8s/deployment.yaml
+          kubectl apply -f k8s/deployment.yaml
+          kubectl rollout status deployment/linkpulse-api --timeout=120s
+
+      # Keeps k8s/deployment.yaml honest about what's actually running --
+      # the same manual step done by hand throughout this project, now
+      # automatic. [skip ci] stops this commit from re-triggering the
+      # whole workflow (GitHub's own convention, no extra config needed).
+      - name: commit the deployed image tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add k8s/deployment.yaml
+          git diff --staged --quiet || git commit -m "Deploy ${{ github.sha }} [skip ci]"
+          git push
