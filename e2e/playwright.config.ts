@@ -26,7 +26,7 @@ export default defineConfig({
   // 直接把 Go server 起在測試前面，測完自動關掉；本機開發如果已經手動
   // 起了一個 server，會直接重複使用，不會再啟動第二個。
   webServer: {
-    command: 'go run main.go',
+    command: 'go run .',
     cwd: '..',
     url: `${BASE_URL}/healthz`,
     reuseExistingServer: !process.env.CI,

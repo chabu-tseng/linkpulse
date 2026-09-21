@@ -1,8 +1,10 @@
 package main
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,10 +13,17 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 )
 
+// failingReader 永遠回傳錯誤,用來測試 generateShortCode 讀不到隨機資料時的行為
+type failingReader struct{}
+
+func (failingReader) Read(p []byte) (int, error) {
+	return 0, errors.New("simulated rand read failure")
+}
+
 // ---------- generateShortCode ----------
 
 func TestGenerateShortCode_Length(t *testing.T) {
-	code, err := generateShortCode()
+	code, err := generateShortCode(rand.Reader)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -24,7 +33,7 @@ func TestGenerateShortCode_Length(t *testing.T) {
 }
 
 func TestGenerateShortCode_CharsetValid(t *testing.T) {
-	code, err := generateShortCode()
+	code, err := generateShortCode(rand.Reader)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -37,7 +46,7 @@ func TestGenerateShortCode_CharsetValid(t *testing.T) {
 
 func TestGenerateShortCode_NoError(t *testing.T) {
 	for i := 0; i < 100; i++ {
-		if _, err := generateShortCode(); err != nil {
+		if _, err := generateShortCode(rand.Reader); err != nil {
 			t.Fatalf("unexpected error on iteration %d: %v", i, err)
 		}
 	}
@@ -48,7 +57,7 @@ func TestGenerateShortCode_LowCollisionRate(t *testing.T) {
 	seen := make(map[string]bool, n)
 	collisions := 0
 	for i := 0; i < n; i++ {
-		code, err := generateShortCode()
+		code, err := generateShortCode(rand.Reader)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -60,6 +69,13 @@ func TestGenerateShortCode_LowCollisionRate(t *testing.T) {
 	// 62^7 ≈ 3.5e12種組合，10000次抽樣預期碰撞數趨近於0，容許極少數以避免測試 flaky
 	if collisions > 2 {
 		t.Errorf("unexpectedly high collision count: %d out of %d draws", collisions, n)
+	}
+}
+
+func TestGenerateShortCode_RandReadError(t *testing.T) {
+	_, err := generateShortCode(failingReader{})
+	if err == nil {
+		t.Fatal("expected error when random source fails, got nil")
 	}
 }
 
@@ -80,6 +96,7 @@ func TestIsValidURL(t *testing.T) {
 		{"whitespace only", "   ", false},
 		{"too long", "https://example.com/" + strings.Repeat("a", maxURLLength), false},
 		{"scheme without host", "https://", false},
+		{"invalid percent-encoding", "http://%zz", false},
 	}
 
 	for _, tc := range cases {
@@ -194,6 +211,25 @@ func TestShortenHandler_MalformedJSON(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400, got %d", w.Code)
+	}
+}
+
+func TestShortenHandler_RandSourceError(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	srv := &Server{db: db, baseURL: "http://localhost:8080", randSource: failingReader{}}
+
+	body := strings.NewReader(`{"url":"https://example.com"}`)
+	req := httptest.NewRequest(http.MethodPost, "/shorten", body)
+	w := httptest.NewRecorder()
+
+	srv.routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500, got %d", w.Code)
 	}
 }
 
@@ -312,6 +348,48 @@ func TestMetricsEndpoint(t *testing.T) {
 	}
 }
 
+// ---------- initDB ----------
+
+func TestInitDB_DefaultDSN(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+	db, err := initDB()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if db == nil {
+		t.Fatal("expected non-nil db")
+	}
+}
+
+func TestInitDB_CustomDSN(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://user:pass@example.com:5432/db?sslmode=disable")
+	db, err := initDB()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if db == nil {
+		t.Fatal("expected non-nil db")
+	}
+}
+
+// ---------- metricsMiddleware ----------
+
+func TestMetricsMiddleware_UnmatchedRoute(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// /{code} 只吃單一路徑片段,多一層路徑才會真的落到 chi 的 NotFound、
+	// RoutePattern() 回空字串那個分支
+	req := httptest.NewRequest(http.MethodGet, "/a/b", nil)
+	w := httptest.NewRecorder()
+
+	srv.routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
 // ---------- indexHandler ----------
 
 func TestIndexHandler(t *testing.T) {
@@ -326,5 +404,23 @@ func TestIndexHandler(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "LinkPulse") {
 		t.Errorf("expected body to contain 'LinkPulse', got: %s", w.Body.String()[:200])
+	}
+}
+
+func TestIndexHandler_ReadError(t *testing.T) {
+	original := readIndexHTML
+	readIndexHTML = func() ([]byte, error) {
+		return nil, errors.New("simulated embedded file read failure")
+	}
+	t.Cleanup(func() { readIndexHTML = original })
+
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+
+	srv.routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500, got %d", w.Code)
 	}
 }

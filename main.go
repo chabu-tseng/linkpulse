@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -21,6 +22,13 @@ import (
 //go:embed static/index.html
 var staticFiles embed.FS
 
+// readIndexHTML 包成一個變數而不是直接呼叫 staticFiles.ReadFile，讓測試
+// 可以替換掉它去模擬讀取失敗（embed.FS 的內容在編譯期就固定了，沒有這層
+// 間接就沒辦法從外部觸發這個錯誤分支）。
+var readIndexHTML = func() ([]byte, error) {
+	return staticFiles.ReadFile("static/index.html")
+}
+
 const shortCodeChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 // maxURLLength 限制使用者可以送入的網址長度，避免異常大的輸入打進資料庫
@@ -32,20 +40,22 @@ var allowedURLSchemes = map[string]bool{
 	"https": true,
 }
 
-// Server 把外部依賴（DB、base URL）包起來，讓 handler 可以被注入假的依賴以利測試
+// Server 把外部依賴（DB、base URL、亂數來源）包起來，讓 handler 可以被注入假的依賴以利測試
 type Server struct {
-	db      *sql.DB
-	baseURL string
+	db         *sql.DB
+	baseURL    string
+	randSource io.Reader
 }
 
 func NewServer(db *sql.DB, baseURL string) *Server {
-	return &Server{db: db, baseURL: baseURL}
+	return &Server{db: db, baseURL: baseURL, randSource: rand.Reader}
 }
 
-// generateShortCode 產生一個 7 個字元的隨機短碼
-func generateShortCode() (string, error) {
+// generateShortCode 產生一個 7 個字元的隨機短碼。source 通常傳
+// crypto/rand.Reader，測試時可以換成一個會回錯誤的假 reader。
+func generateShortCode(source io.Reader) (string, error) {
 	b := make([]byte, 7)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := io.ReadFull(source, b); err != nil {
 		return "", err
 	}
 	for i := range b {
@@ -77,7 +87,7 @@ func isValidURL(raw string) bool {
 
 // indexHandler 提供前端頁面
 func (s *Server) indexHandler(w http.ResponseWriter, r *http.Request) {
-	data, err := staticFiles.ReadFile("static/index.html")
+	data, err := readIndexHTML()
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -114,7 +124,7 @@ func (s *Server) shortenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	code, err := generateShortCode()
+	code, err := generateShortCode(s.randSource)
 	if err != nil {
 		log.Printf("failed to generate short code: %v", err)
 		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
