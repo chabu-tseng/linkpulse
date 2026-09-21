@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -185,7 +186,18 @@ func initDB() (*sql.DB, error) {
 	if dsn == "" {
 		dsn = "postgres://postgres:postgres@localhost:5432/linkpulse?sslmode=disable"
 	}
-	return sql.Open("pgx", dsn)
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, err
+	}
+	// 沒有上限的連線池讓並發請求量可以直接轉換成對 Postgres 的並發連線數,
+	// 高並發下會把 DB 的記憶體吃爆(2026-09-16 的負載測試就是這樣把 Postgres
+	// OOMKilled 的)。這裡限制住,讓 app 自己在連線池打滿時排隊等待,而不是
+	// 让 Postgres 自己被打爆。
+	db.SetMaxOpenConns(20)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	return db, nil
 }
 
 func main() {
