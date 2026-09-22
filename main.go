@@ -1,3 +1,6 @@
+// linkpulse: a URL shortener built as a full backend engineering exercise
+// (testing, CI/CD, Kubernetes, observability, SRE practice against a real
+// deployed system).
 package main
 
 import (
